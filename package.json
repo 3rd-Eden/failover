@@ -1,0 +1,22 @@
+{
+  "name": "failover",
+  "version": "0.0.0",
+  "description": "Failover solution for managing cluster fucks",
+  "main": "index.js",
+  "scripts": {
+    "test": "make test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/3rd-Eden/failover.git"
+  },
+  "keywords": [
+    "failover",
+    "backoff",
+    "retry",
+    "cluster",
+    "fuck"
+  ],
+  "author": "Arnout Kazemier <info@3rd-Eden.com>",
+  "license": "MIT"
+}
