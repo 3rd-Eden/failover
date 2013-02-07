@@ -138,14 +138,16 @@ Failover.prototype.connect = function connect(connection) {
 
   connection.once('close', function close(err) {
     if (
-        !err                              // did not die due to an error
+      connection._flag !== 1              // the _flag is set to one 1 if the server
+                                          // closed the connection
+      && !err                             // did not die due to an error
       || self.destroyed                   // this instance was destroyed
       || !self.connection[address.string] // unknown connection, bailout
     ) return;
 
     // We don't have any servers self to fail over to, emit death
     if (!self.servers.length) {
-
+      return self.emit('death', address, connection);
     }
 
     var failover = self.servers.pop();
