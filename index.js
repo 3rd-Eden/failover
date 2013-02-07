@@ -22,8 +22,7 @@ function Failover(servers, options) {
   this.servers = servers;
 
   Object.keys(options).reduce(function config(self, key) {
-    self[key] = options[key];
-    return self;
+    if (key in self) self[key] = options[key];
   }, this);
 
   this.options = options || {};
@@ -67,8 +66,8 @@ Failover.prototype.reclaim = function reclaim(server) {
 Failover.prototype.push = function push(server) {
   var indexOf = this.servers.indexOf(server);
 
-  if (!~indexOf) return false;
-  this.server.push(server);
+  if (~indexOf) return false;
+  this.servers.push(server);
 
   return true;
 };
@@ -90,9 +89,12 @@ Failover.prototype.get = function get(connection) {
     , 'drain'
     , 'error'
     , 'close'
-  ].forEach(function events(event) {
+  ].forEach(function removal(event) {
+    var events = connection.listeners(event);
+    if (!events.length) return;
+
     // Remove the old listeners, so they are not triggered when we reconnect
-    listeners[event] = connection.listeners(event);
+    listeners[event] = events;
     connection.removeAllListeners(event);
   });
 
@@ -125,6 +127,11 @@ Failover.prototype.connect = function connect(connection) {
   var address = connection.address()
     , self = this;
 
+  // We don't have an address, wait until the socket is connected
+  if (!address) return connection.once('connect', function () {
+    self.connect(connection);
+  });
+
   // Create a uniform interface for the address details.
   address.host = address.address;
   address.string = address.host +':'+ address.port;
@@ -146,6 +153,9 @@ Failover.prototype.connect = function connect(connection) {
     self.emit('failover', address, failover, connection);
     self.upgrade(connection, address, failover);
   });
+
+  // Add extra properties to the connection.
+  connection.parsedAddress = address;
 
   // It could be that we received an connection that is from a connection pool,
   // so we should add it to our internal connection queue so we can fail over
@@ -257,3 +267,8 @@ Failover.prototype.end = function end() {
   this.destroyed = true;
   this.connection = Object.create(null);
 };
+
+/**
+ * Expose the module.
+ */
+module.exports = Failover;
