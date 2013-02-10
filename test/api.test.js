@@ -1,6 +1,8 @@
+/*global portnumber */
 'use strict';
 
-var Failover = require('../')
+var EventEmitter = require('events').EventEmitter
+  , Failover = require('../')
   , chai = require('chai')
   , net = require('net');
 
@@ -33,7 +35,7 @@ describe('new Failover()', function () {
   it('inherits from EventEmitter', function () {
     var fail = new Failover();
 
-    expect(fail).to.be.instanceOf(require('events').EventEmitter);
+    expect(fail).to.be.instanceOf(EventEmitter);
   });
 });
 
@@ -76,15 +78,14 @@ describe('Failover', function () {
   });
 
   describe('#get', function () {
-    var EventEmitter = require('events').EventEmitter
-      , removed = [
-            'data'
-          , 'end'
-          , 'timeout'
-          , 'drain'
-          , 'error'
-          , 'close'
-        ];
+    var removed = [
+        'data'
+      , 'end'
+      , 'timeout'
+      , 'drain'
+      , 'error'
+      , 'close'
+    ];
 
     it('removes nothing if there are no events added,', function () {
       var fail = new Failover()
@@ -126,15 +127,14 @@ describe('Failover', function () {
   });
 
   describe('#set', function () {
-    var EventEmitter = require('events').EventEmitter
-      , removed = [
-            'data'
-          , 'end'
-          , 'timeout'
-          , 'drain'
-          , 'error'
-          , 'close'
-        ];
+    var removed = [
+        'data'
+      , 'end'
+      , 'timeout'
+      , 'drain'
+      , 'error'
+      , 'close'
+    ];
 
     it('adds the removed data,end,timeout,drain,error,close events', function () {
       var fail = new Failover()
@@ -174,5 +174,70 @@ describe('Failover', function () {
 
       expect(calls).to.equal(1);
     });
+  });
+
+  describe('#connect', function () {
+    var connections = []
+      , server
+      , port;
+
+    before(function after(done) {
+      port = portnumber;
+      server = net.createServer(function connection(c) {
+        connections.push(c);
+      });
+
+      server.listen(port, done);
+    });
+
+    after(function after(done) {
+      server.close();
+      connections.forEach(function forEach(c) {
+        c.end();
+      });
+
+      connections.length = 0;
+      done();
+    });
+
+    it('returns the passed connection', function () {
+      var fail = new Failover('localhost:3333', { upgrade: false })
+        , connection = net.connect(port);
+
+      expect(fail.connect(connection)).to.equal(connection);
+    });
+
+    it('emits `death` when there are no servers to fail over to', function (done) {
+      var fail = new Failover([], { upgrade: false })
+        , connection = net.connect(port);
+
+      // Just so it doesn't throw
+      connection.once('error', function () {});
+
+      fail.once('death', function death(address, conn) {
+        expect(conn).to.equal(connection);
+        expect(address.port).to.equal(port);
+        expect(address.host).to.equal('127.0.0.1');
+        expect(address.string).to.equal('127.0.0.1:'+ address.port);
+
+        done();
+      });
+
+      fail.connect(connection);
+
+      connection.once('connect', function () {
+        connection.destroy(new Error('DIEEE MOTHERFUCKERRR'));
+      });
+    });
+
+    it('emits `failover` when the connection receives an error');
+
+    it('emits `failover` when the server closes the connection');
+
+    it('does not emit when Failover is destoryed');
+
+    it('does not emit when we close the connection');
+
+    it('maintains history of failed over connections');
   });
 });

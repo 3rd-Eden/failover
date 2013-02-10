@@ -1,6 +1,6 @@
 'use strict';
 
-var portnumber = 1024;
+var portnumbers = 1024;
 
 /**
  * Automatic increasing test numbers.
@@ -13,8 +13,8 @@ var portnumber = 1024;
  *
  * @api public
  */
-Object.defineProperty(global, 'portnumbers', {
+Object.defineProperty(global, 'portnumber', {
   get: function get() {
-    return portnumber++;
+    return portnumbers++;
   }
 });

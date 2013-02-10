@@ -128,17 +128,17 @@ Failover.prototype.set = function set(connection, listeners) {
  * @api private
  */
 Failover.prototype.connect = function connect(connection) {
-  var address = connection.address()
-    , self = this;
+  var self = this
+    , address;
 
-  // We don't have an address, wait until the socket is connected
-  if (!address) return connection.once('connect', function () {
-    self.connect(connection);
-  });
+  if (!connection.remoteAddress || !connection.remotePort) {
+    return connection.once('connect', function () {
+      self.connect(connection);
+    });
+  }
 
   // Create a uniform interface for the address details.
-  address.host = address.address;
-  address.string = address.host +':'+ address.port;
+  address = parse(connection.remoteAddress +':'+ connection.remotePort).servers[0];
 
   connection.once('close', function close(err) {
     if (
@@ -146,7 +146,7 @@ Failover.prototype.connect = function connect(connection) {
                                           // closed the connection
       && !err                             // did not die due to an error
       || self.destroyed                   // this instance was destroyed
-      || !self.connection[address.string] // unknown connection, bailout
+      || !self.connections[address.string] // unknown connection, bailout
     ) return;
 
     // We don't have any servers self to fail over to, emit death
@@ -155,7 +155,6 @@ Failover.prototype.connect = function connect(connection) {
     }
 
     var failover = self.servers.pop();
-
     self.emit('failover', address, failover, connection);
   });
 
