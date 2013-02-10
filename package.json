@@ -22,5 +22,8 @@
   "devDependencies": {
     "mocha": "~1.8.1",
     "chai": "~1.5.0"
+  },
+  "dependencies": {
+    "connection-parse": "0.0.0"
   }
 }

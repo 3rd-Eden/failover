@@ -1,31 +1,31 @@
 'use strict';
 
 var EventEmitter = require('events').EventEmitter
+  , parse = require('connection-parse')
   , net = require('net');
 
 function Failover(servers, options) {
   servers = servers || [];
   options = options || {};
 
-  this.raise = false;             // Raise an error if no more servers are found.
-  this.retries = 0;               // Times to retry the request.
   this.attempts = 5;              // How many attempts before we mark the server as dead.
+  this.timeout = 1000;            // Time out between the attempts
   this.reuse = true;              // When a server dies add it as failover server once.
-  this.timeout = 1000;            // No activity, kill the connection.
   this.minDelay = 1000;           // The minimum delay of the strategy
   this.maxDelay = Infinity;       // The maximum delay of the strategy
   this.strategy = 'exponential';  // What kind of backoff should we use.
-
-  //
-  // The actual service that we need test and provide failover support to.
-  //
-  this.servers = servers;
+  this.upgrade = true;            // Should we upgrade the conneection
 
   Object.keys(options).reduce(function config(self, key) {
     if (key in self) self[key] = options[key];
   }, this);
 
-  this.options = options || {};
+  //
+  // The actual service that we need test and provide failover support to.
+  //
+  this.servers = parse(servers).servers;
+
+  this.options = options;
   this.connections = {};          // Saves all connections per server/port combo
   this.destroyed = false;         // The failover instance is destroyed
   this.history = {};              // Historic upgrades as not every connection dies
@@ -33,9 +33,13 @@ function Failover(servers, options) {
   this.metrics = {
       'attempts':    0            // Total reconnect attempts made.
     , 'successfull': 0            // Successfull reconnects.
-    , 'failures':    0            // Failed reconection attempts.
+    , 'failures':    0            // Failed reconnection attempts.
     , 'downtime':    0            // Total dowm time of this server.
   };
+
+  // Start listening for the `failover` events so we can start upgrading the
+  // connection.
+  if (this.upgrade) this.on('failover', this.upgrader.bind(this));
 }
 
 Failover.prototype.__proto__ = EventEmitter.prototype;
@@ -153,7 +157,6 @@ Failover.prototype.connect = function connect(connection) {
     var failover = self.servers.pop();
 
     self.emit('failover', address, failover, connection);
-    self.upgrade(connection, address, failover);
   });
 
   // Add extra properties to the connection.
@@ -174,9 +177,12 @@ Failover.prototype.connect = function connect(connection) {
 /**
  * Have the connection upgrade to a new fallover server.
  *
+ * @param {Object} from
+ * @param {Object} to
+ * @param {net.Connection} connection
  * @api private
  */
-Failover.prototype.upgrade = function upgrade(connection, from, to) {
+Failover.prototype.upgrader = function upgrade(from, to, connection) {
   var connections = this.connections[from.string].splice(0)
     , listeners = this.get(connection)
     , self = this;

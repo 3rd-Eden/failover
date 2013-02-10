@@ -13,9 +13,9 @@ describe('new Failover()', function () {
   });
 
   it('applies the options', function () {
-    var fail = new Failover([], { retries: 99 });
+    var fail = new Failover([], { attempts: 99 });
 
-    expect(fail.retries).to.equal(99);
+    expect(fail.attempts).to.equal(99);
   });
 
   it('does not add properties that does not exist', function () {
