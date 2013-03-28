@@ -181,7 +181,7 @@ describe('Failover', function () {
       , server
       , port;
 
-    before(function after(done) {
+    beforeEach(function after(done) {
       port = portnumber;
       server = net.createServer(function connection(c) {
         connections.push(c);
@@ -190,7 +190,7 @@ describe('Failover', function () {
       server.listen(port, done);
     });
 
-    after(function after(done) {
+    afterEach(function after(done) {
       server.close();
       connections.forEach(function forEach(c) {
         c.end();
@@ -211,9 +211,6 @@ describe('Failover', function () {
       var fail = new Failover([], { upgrade: false })
         , connection = net.connect(port);
 
-      // Just so it doesn't throw
-      connection.once('error', function () {});
-
       fail.once('death', function death(address, conn) {
         expect(conn).to.equal(connection);
         expect(address.port).to.equal(port);
@@ -230,14 +227,152 @@ describe('Failover', function () {
       });
     });
 
-    it('emits `failover` when the connection receives an error');
+    it('emits `failover` when the connection receives an error', function (done) {
+      var fail = new Failover('127.0.0.1:2232', { upgrade: false })
+        , connection = net.connect(port);
 
-    it('emits `failover` when the server closes the connection');
+      fail.once('failover', function failover(from, to, conn) {
+        expect(conn).to.equal(connection);
 
-    it('does not emit when Failover is destoryed');
+        expect(from.port).to.equal(port);
+        expect(from.host).to.equal('127.0.0.1');
+        expect(from.string).to.equal('127.0.0.1:'+ from.port);
 
-    it('does not emit when we close the connection');
+        expect(to.port).to.equal(2232);
+        expect(to.host).to.equal('127.0.0.1');
+        expect(to.string).to.equal('127.0.0.1:'+ 2232);
 
-    it('maintains history of failed over connections');
+        done();
+      });
+
+      fail.connect(connection);
+
+      connection.once('connect', function () {
+        connection.emit('error', new Error('DIEEE MOTHERFUCKERRR'));
+      });
+    });
+
+    it('emits `failover` when the server closes the connection', function (done) {
+      var fail = new Failover('127.0.0.1:2232', { upgrade: false })
+        , connection = net.connect(port);
+
+      fail.once('failover', function failover(from, to, conn) {
+        expect(conn).to.equal(connection);
+
+        expect(from.port).to.equal(port);
+        expect(from.host).to.equal('127.0.0.1');
+        expect(from.string).to.equal('127.0.0.1:'+ from.port);
+
+        expect(to.port).to.equal(2232);
+        expect(to.host).to.equal('127.0.0.1');
+        expect(to.string).to.equal('127.0.0.1:'+ 2232);
+
+        done();
+      });
+
+      fail.connect(connection);
+
+      connection.once('connect', function connect() {
+        setTimeout(function setTimeout() {
+          connections.pop().end();
+        }, 100);
+      });
+    });
+
+    it('does not emit when we close the connection', function (done) {
+      var fail = new Failover('127.0.0.1:2232', { upgrade: false })
+        , connection = net.connect(port);
+
+      fail.once('failover', function failover(from, to, conn) {
+        done(new Error('LOL WUT, I should not emit failover'));
+      });
+
+      fail.connect(connection);
+
+      connection.once('connect', function connect() {
+        setTimeout(function setTimeout() {
+          connection.end();
+
+          process.nextTick(done);
+        }, 100);
+      });
+    });
+
+    it('does not emit when Failover is destoryed', function (done) {
+      var fail = new Failover('127.0.0.1:2232', { upgrade: false })
+        , connection = net.connect(port);
+
+      fail.once('failover', function failover(from, to, conn) {
+        done(new Error('should not throw errors'));
+      });
+
+      fail.connect(connection);
+      fail.destroy();
+
+      connection.once('connect', function () {
+        connection.emit('error', new Error('DIEEE MOTHERFUCKERRR'));
+        done();
+
+        fail.destroy();
+      });
+    });
+
+    it('maintains history of failed over connections', function (done) {
+      var fail = new Failover('127.0.0.1:2232', { upgrade: false })
+        , connection = net.connect(port);
+
+      fail.once('failover', function failover(from, to, conn) {
+
+        expect(fail.history[from.string]).to.equal(to);
+        done();
+      });
+
+      fail.connect(connection);
+
+      connection.once('connect', function () {
+        connection.emit('error', new Error('DIEEE MOTHERFUCKERRR'));
+      });
+    });
+  });
+
+  describe('#override', function () {
+    it('overrides the connection');
+
+    it('does not override twice');
+  });
+
+  describe('#upgrader', function () {
+    var servers = {}
+      , ports = []
+      , length = 0;
+
+    beforeEach(function after(done) {
+      for (var i = 0; i < length; i++) {
+        var port = portnumber;
+
+        servers[port] = net.createServer(function connection(c) {
+          servers[port].CONNECTIONS.push(c);
+        });
+
+        servers[port].CONNECTIONS = [];
+        servers[port].listen(port, done);
+
+        ports.push(port);
+      }
+    });
+
+    afterEach(function after(done) {
+      Object.keys(servers).forEach(function closing(port) {
+        servers[port].close();
+
+        servers[port].CONNECTIONS.forEach(function connections(c) {
+          c.end();
+        });
+
+        servers[port].CONNECTIONS.length = 0;
+      });
+
+      done();
+    });
   });
 });

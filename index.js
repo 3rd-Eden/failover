@@ -2,6 +2,7 @@
 
 var EventEmitter = require('events').EventEmitter
   , parse = require('connection-parse')
+  , stack = require('callsite')
   , net = require('net');
 
 function Failover(servers, options) {
@@ -131,8 +132,10 @@ Failover.prototype.connect = function connect(connection) {
   var self = this
     , address;
 
+  // @TODO we might also want to be listening to close/error for quick failing
+  // connections.
   if (!connection.remoteAddress || !connection.remotePort) {
-    return connection.once('connect', function () {
+    return connection.once('connect', function connected() {
       self.connect(connection);
     });
   }
@@ -140,13 +143,26 @@ Failover.prototype.connect = function connect(connection) {
   // Create a uniform interface for the address details.
   address = parse(connection.remoteAddress +':'+ connection.remotePort).servers[0];
 
-  connection.once('close', function close(err) {
+  /**
+   * Trigger function that listens to the different connection state changes and
+   * determins if we need to failover to a different server.
+   *
+   * @param {Error} err
+   * @api private
+   */
+  function trigger(err) {
+    // Remove the event listeners, this also prevents this function from being
+    // called twice if an error occured
+    connection.removeListener('error', trigger);
+    connection.removeListener('close', trigger);
+
+    // Determin if this connection was closed intended or unintendded
     if (
-      connection._flag !== 1              // the _flag is set to one 1 if the server
-                                          // closed the connection
-      && !err                             // did not die due to an error
-      || self.destroyed                   // this instance was destroyed
-      || !self.connections[address.string] // unknown connection, bailout
+      !connection.closeByNode              // The _flag is set to one 1 if the server
+                                           // closed the connection
+      && !err                              // Did not die due to an error
+      || self.destroyed                    // This instance was destroyed
+      || !self.connections[address.string] // Unknown connection, bailout
     ) return;
 
     // We don't have any servers self to fail over to, emit death
@@ -155,8 +171,18 @@ Failover.prototype.connect = function connect(connection) {
     }
 
     var failover = self.servers.pop();
+
+    self.history[address.string] = failover;
     self.emit('failover', address, failover, connection);
-  });
+  }
+
+  // Assign the event listeners
+  connection.once('close', trigger);
+  connection.once('error', trigger);
+
+  // Override the end/destroy properties so we can figure out who killed the
+  // connection, should be done BEFORE we set the `parsedAddress`
+  this.override(connection);
 
   // Add extra properties to the connection.
   connection.parsedAddress = address;
@@ -171,6 +197,39 @@ Failover.prototype.connect = function connect(connection) {
   }
 
   return connection;
+};
+
+/**
+ * Fucking horrible hacky way of figuring out where the connection has been
+ * closed. We don't receive any information from node on where we got our `end`
+ * and `destroy` calls from. The only way to trace it down to node is to track
+ * it to the `onread` function using a stack trace... Which is horrible..
+ *
+ * @param {net.Connection} connection
+ * @api private
+ */
+Failover.prototype.override = function override(connection) {
+  // This connection has been called for the second time..
+  if ('parsedAddress' in connection) return;
+
+  // This connection is not yet closed by Node
+  connection.closeByNode = false;
+
+  ['end', 'destroy'].forEach(function wrapper(method) {
+    var old = connection[method];
+
+    connection[method] = function wrapping() {
+      stack().slice(1, 2).forEach(function stacktrace(site) {
+        // console.log(site.getFileName(), site.getFunctionName());
+        if ('net.js' === site.getFileName() && 'onread' === site.getFunctionName()) {
+          connection.closeByNode = true;
+        }
+      });
+
+      // Re-call the original method with all the arguments
+      old.apply(this, arguments);
+    };
+  });
 };
 
 /**
@@ -194,8 +253,8 @@ Failover.prototype.upgrader = function upgrade(from, to, connection) {
    */
   function either(failed) {
     // Remove our attached EventListeners
-    connection.removeEventListener('connect', either);
-    connection.removeEventListener('error', either);
+    connection.removeListener('connect', either);
+    connection.removeListener('error', either);
 
     // Re-attach the EventListeners that we erased from the connection
     self.set(connection, listeners);
@@ -203,11 +262,11 @@ Failover.prototype.upgrader = function upgrade(from, to, connection) {
     // Well fuck, the connection failed
     // @TODO probalby mark the rest of the servers as failed as well.
     if (failed) return self.emit('death', to, connection);
-    if (!connections) return;
 
-    // If we didn't have a failure it's save enough to upgrade the rest of the
-    // connections to this.
-
+    // Successful upgrade the connection, emit this and start listining for
+    // connection failures again.
+    self.emit('upgraded', from, to, connection);
+    self.connect(connection);
   }
 
   connection.once('connect', either);
@@ -222,39 +281,61 @@ Failover.prototype.upgrader = function upgrade(from, to, connection) {
  * Attempt to reconnect to the given connection using an exponential backoff
  * algorithm.
  *
+ * Options:
+ *
+ * - maxDelay: Maximum delay of the backoff
+ * - minDelay: Minimum delay of the backoff
+ * - reties: The amount of allowed retries
+ * - factor: Exponential backoff factor
+ * - attempt: Current attempt
+ *
  * @param {Function} callback callback that needs to be executed after x
  * @param {Object} opts options for configuring the timeout
  * @api private
  */
 Failover.prototype.exponential = function exponential(callback, opts) {
+  opts = opts || {};
+
   opts.maxDelay = opts.maxDelay || this.maxDelay;
   opts.minDelay = opts.minDelay || this.minDelay;
   opts.retries = opts.retries || this.retries;
-  opts.attempt = opts.attempt || 0;
+  opts.attempt = (opts.attempt || 0) + 1;
   opts.factor = opts.factor || 2;
+
+  // Bailout if we are about to make to much attempts. Please note that we use
+  // `>` because we already incremented the value above.
+  if (opts.attempt > opts.retries || opts.backoff) {
+    return callback(new Error('Unable to retry'), opts);
+  }
 
   // Calculate the timeout, but make it randomly so we don't retry connections
   // at the same interval and defeat the purpose. This exponential backoff is
   // based on the work of:
   //
   // http://dthain.blogspot.nl/2009/02/exponential-backoff-in-distributed.html
-  var timeout = Math.min(
+  opts.timeout = Math.min(
       Math.round(
         (Math.random() * 1) * opts.minDelay * Math.pow(opts.factor, opts.attempt)
       )
     , opts.maxDelay
   );
 
-  setTimeout(callback, timeout);
+  setTimeout(function timeout() {
+    callback(undefined, opts);
+  }, opts.timeout);
 };
 
 /**
  * Attempt to reconnect to the given connection using an fixed interval.
  */
 Failover.prototype.fixed = function fixed(callback, opts) {
+  opts = opts || {};
+
   opts.timeout = opts.timeout || this.minDelay;
 
-  setTimeout(callback, opts.timeout);
+  setTimeout(function timeout() {
+    callback(undefined, opts);
+  }, opts.timeout);
 };
 
 /**
@@ -262,18 +343,34 @@ Failover.prototype.fixed = function fixed(callback, opts) {
  * algorithm.
  */
 Failover.prototype.fibonacci = function fibonacci(callback, opts) {
-  setTimeout(callback, 1000);
+  opts = opts || {};
+
+  setTimeout(function timeout() {
+    callback(undefined, opts);
+  }, 1000);
 };
 
 /**
  * Kills the failover shizzle, freeing all listeners.
  *
+ * @param {Boolean} nuke also kill all the connections that we are attached on
  * @api public
  */
-Failover.prototype.end = function end() {
+Failover.prototype.end = function end(nuke) {
   this.destroyed = true;
-  this.connection = Object.create(null);
+
+  // We are allready flagged as closed, see if we need to nuke existing
+  // connections.
+  if (nuke) Object.keys(this.connections).forEach(function connection(string) {
+    this.connections[string].forEach(function end(connection) {
+      connection.end();
+    });
+  }.bind(this));
+
+  this.connections = Object.create(null);
 };
+
+Failover.prototype.destroy = Failover.prototype.end;
 
 /**
  * Expose the module.
