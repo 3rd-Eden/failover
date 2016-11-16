@@ -20,11 +20,11 @@
   "author": "Arnout Kazemier <info@3rd-Eden.com>",
   "license": "MIT",
   "devDependencies": {
-    "mocha": "~1.8.1",
-    "chai": "~1.5.0"
+    "mocha": "~3.1.2",
+    "chai": "~3.5.0"
   },
   "dependencies": {
-    "connection-parse": "0.0.0",
+    "connection-parse": "0.0.7",
     "callsite": "~1.0.0"
   }
 }
